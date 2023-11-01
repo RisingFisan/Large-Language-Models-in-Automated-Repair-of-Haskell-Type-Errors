@@ -108,7 +108,7 @@ combinations ((e, unds) : xs) =
 
 mergeDecls :: [Either [HsDecl] HsDecl] -> [[HsDecl]]
 mergeDecls [] = [[]]
-mergeDecls (Left xs : t) = [ x : r | x <- xs, r <- mergeDecls t]
+mergeDecls (Left xs : t) = let rs = mergeDecls t in [ x : head rs | x <- xs ] ++ [ head xs : r | r <- tail rs ]
 mergeDecls (Right x : t) = [ x : r | r <- mergeDecls t]
 
 main :: IO ()

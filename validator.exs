@@ -11,7 +11,7 @@ case File.ls("variants") do
       case System.cmd("ghc", ["-fno-code", "variants/#{file}"], stderr_to_stdout: true) do
         {_ ,   0} -> IO.puts("File #{file} type checks.")
         {err,  1} ->
-          if err =~ "The IO action `main' is not defined in module" do
+          if err =~ ~r"The IO action (`|‘|')main('|’|`) is not defined in module" do
             File.write("variants/main_#{file}", File.read!("variants/#{file}") <> dummy_main)
             case System.cmd("ghc", ["-fno-code", "variants/main_#{file}"], stderr_to_stdout: true) do
               {_ ,   0} -> IO.puts("File #{file} type checks.")
