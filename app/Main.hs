@@ -35,43 +35,61 @@ undefineds (HsLit _) = [HsVar (UnQual (HsIdent "undefined"))]
 undefineds (HsVar _) = [HsVar (UnQual (HsIdent "undefined"))]
 undefineds (HsCon _) = [HsVar (UnQual (HsIdent "undefined"))]
 undefineds (HsList _) = [HsVar (UnQual (HsIdent "undefined"))]
-undefineds (HsInfixApp exp1 (HsQConOp conop) exp2) = 
+undefineds (HsTuple exprs) = HsVar (UnQual (HsIdent "undefined")) : [ HsTuple $ take i exprs ++ [x] ++ drop (i + 1) exprs | i <- [0..length exprs - 1], x <- undefineds (exprs !! i) ]
+undefineds (HsInfixApp exp1 (HsQConOp conop) exp2) =
     map (\x -> HsInfixApp x (HsQConOp conop) exp2) (undefineds exp1)
     ++
     [HsInfixApp exp1 (HsQVarOp (UnQual (HsIdent "undefined"))) exp2]
     ++
     map (HsInfixApp exp1 (HsQConOp conop)) (undefineds exp2)
-undefineds (HsInfixApp exp1 (HsQVarOp (UnQual hn)) exp2) = 
+undefineds (HsInfixApp exp1 (HsQVarOp (UnQual hn)) exp2) =
     map (\x -> HsInfixApp x (HsQVarOp (UnQual hn)) exp2) (undefineds exp1)
     ++
     [HsInfixApp exp1 (HsQVarOp (UnQual (HsIdent "undefined"))) exp2]
     ++
     map (HsInfixApp exp1 (HsQVarOp (UnQual hn))) (undefineds exp2)
-undefineds (HsApp exp1 exp2) = 
+undefineds (HsApp exp1 exp2) =
     map (`HsApp` exp2) (undefineds exp1)
     ++
     map (HsApp exp1) (undefineds exp2)
-undefineds (HsLeftSection exp1 op) = 
+undefineds (HsLeftSection exp1 op) =
     map (`HsLeftSection` op) (undefineds exp1)
     ++
     [HsLeftSection exp1 (HsQVarOp (UnQual (HsIdent "undefined")))]
-undefineds (HsRightSection op exp2) = 
+undefineds (HsRightSection op exp2) =
     map (HsRightSection op) (undefineds exp2)
     ++
     [HsRightSection (HsQVarOp (UnQual (HsIdent "undefined"))) exp2]
-undefineds (HsCase expr alts) = 
+undefineds (HsCase expr alts) =
     map (`HsCase` alts) (undefineds expr)
     ++ map (HsCase expr) (undefinedsCase alts)
+undefineds (HsIf exp1 exp2 exp3) =
+    map (\x -> HsIf x exp2 exp3) (undefineds exp1)
+    ++
+    map (\x -> HsIf exp1 x exp3) (undefineds exp2)
+    ++
+    map (HsIf exp1 exp2) (undefineds exp3)
+undefineds (HsLet binds expr) =
+    map ((`HsLet` expr) . undefinedsDecl) binds
+    ++
+    map (HsLet binds) (undefineds expr)
+undefineds (HsDo stmts) = map (HsDo . undefinedStmt) stmts
+undefineds (HsEnumFrom _) = [HsVar (UnQual (HsIdent "undefined"))]
 undefineds (HsEnumFromTo _ _) = [HsVar (UnQual (HsIdent "undefined"))]
+undefineds (HsEnumFromThenTo {}) = [HsVar (UnQual (HsIdent "undefined"))]
 undefineds (HsParen exps) = map HsParen (undefineds exps)
+undefineds (HsListComp expr stmts) =
+    map (`HsListComp` stmts) (undefineds expr)
+    ++
+    [HsListComp expr (take i stmts ++ [x] ++ drop (i + 1) stmts) | i <- [0 .. length stmts - 1], x <- undefinedStmt (stmts !! i)]
 undefineds x = error $ show [x]
 
 undefinedsCase :: [HsAlt] -> [[HsAlt]]
 undefinedsCase [] = []
-undefinedsCase (HsAlt srcLoc pat (HsUnGuardedAlt exp) binds : xs) = 
-    map (\x -> HsAlt srcLoc x (HsUnGuardedAlt exp) binds : xs) (undefinedsPatterns pat)
-    ++ map (\x -> HsAlt srcLoc pat (HsUnGuardedAlt x) binds : xs) (undefineds exp)
-    ++ map (\x -> HsAlt srcLoc pat (HsUnGuardedAlt exp) binds : x) (undefinedsCase xs)
+undefinedsCase (HsAlt srcLoc pat (HsUnGuardedAlt expr) binds : xs) =
+    map (\x -> HsAlt srcLoc x (HsUnGuardedAlt expr) binds : xs) (undefinedsPatterns pat)
+    ++ map (\x -> HsAlt srcLoc pat (HsUnGuardedAlt x) binds : xs) (undefineds expr)
+    ++ map (\x -> HsAlt srcLoc pat (HsUnGuardedAlt expr) binds : x) (undefinedsCase xs)
 
 undefinedsPatterns :: HsPat -> [HsPat]
 undefinedsPatterns (HsPVar _) = [HsPVar (HsIdent "undefined")]
@@ -89,17 +107,26 @@ undefinedsPatternsT (p:pats) = (p:pats) : (HsPVar (HsIdent "undefined") : pats) 
 
 undefinedsGuards :: [HsGuardedRhs] -> [[HsGuardedRhs]]
 undefinedsGuards [] = []
-undefinedsGuards (HsGuardedRhs srcLoc exp1@(HsVar (UnQual (HsIdent "otherwise"))) exp2 : xs) = 
+undefinedsGuards (HsGuardedRhs srcLoc exp1@(HsVar (UnQual (HsIdent "otherwise"))) exp2 : xs) =
     map (\x -> HsGuardedRhs srcLoc exp1 x : xs) (undefineds exp2)
     ++ map (\x -> HsGuardedRhs srcLoc exp1 exp2 : x) (undefinedsGuards xs)
-undefinedsGuards (HsGuardedRhs srcLoc exp1 exp2 : xs) = 
+undefinedsGuards (HsGuardedRhs srcLoc exp1 exp2 : xs) =
     map (\x -> HsGuardedRhs srcLoc x exp2 : xs) (undefineds exp1)
     ++ map (\x -> HsGuardedRhs srcLoc exp1 x : xs) (undefineds exp2)
     ++ map (\x -> HsGuardedRhs srcLoc exp1 exp2 : x) (undefinedsGuards xs)
 
+undefinedStmt :: HsStmt -> [HsStmt]
+undefinedStmt (HsGenerator srcLoc pat expr) = HsGenerator srcLoc (HsPVar (HsIdent "undefined")) expr : map (HsGenerator srcLoc pat) (undefineds expr)
+undefinedStmt (HsQualifier expr) = map HsQualifier (undefineds expr)
+undefinedStmt (HsLetStmt binds) = error $ show binds
+
+-- TODO
+undefinedsDecl :: HsDecl -> [HsDecl]
+undefinedsDecl x = [x]
+
 combinations :: [(HsMatch, [HsMatch])] -> [[HsMatch]]
 combinations [] = [[]]
-combinations ((e, unds) : xs) = 
+combinations ((e, unds) : xs) =
     let
         others = map fst xs
         r = combinations xs
@@ -112,7 +139,7 @@ mergeDecls (Left xs : t) = let rs = mergeDecls t in [ x : head rs | x <- xs ] ++
 mergeDecls (Right x : t) = [ x : r | r <- mergeDecls t]
 
 main :: IO ()
-main = 
+main =
     getArgs >>= \args ->
     if length args /= 1 then
         error "Missing required argument <filename.hs>."
@@ -132,8 +159,8 @@ main =
                                     HsMatch srcLoc funcName pats (HsGuardedRhss guards) binds ->
                                         (HsMatch srcLoc funcName pats (HsGuardedRhss guards) binds, map (\x -> HsMatch srcLoc funcName pats (HsGuardedRhss x) binds) (undefinedsGuards guards))) matches
                         outracoisa -> return $ Right outracoisa
-                >>= (mergeDecls 
-                    >>> zip [(0::Int)..] 
+                >>= (mergeDecls
+                    >>> zip [(0::Int)..]
                     >>> mapM_ (\(i, decls) -> do
                         putStrLn "------------------"
                         putStrLn $ "Decl " ++ show i

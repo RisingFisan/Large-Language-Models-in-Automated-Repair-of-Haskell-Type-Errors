@@ -2,15 +2,8 @@ import Data.List (nub)
 
 -- função que soma uma lista
 
-group :: Eq a => [a] -> [[a]]
-group [] = []
-group (h:t) = insere h (group t)
-
-insere :: Eq a => a -> [[a]] -> [[a]]
-insere x [] = [x]
-insere x (h:t)
-    | x `elem` h = (x : h) : t
-    | otherwise = [x] : (h : t)
+pares :: [Int] -> [Int]
+pares l = [[x] | x <- l, even x]
     
 -- myreverse :: [a] -> [a]
 -- myreverse [] = []
