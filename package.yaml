@@ -24,6 +24,7 @@ dependencies:
 - haskell-src
 - directory
 - random
+- QuickCheck
 
 ghc-options:
 - -Wall

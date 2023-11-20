@@ -11,6 +11,13 @@ packages:
       size: 97804
   original:
     hackage: haskell-src-exts-1.23.1
+- completed:
+    hackage: QuickCheck-2.14.3@sha256:f03d2f404d5ba465453d0fbc1944832789a759fe7c4f9bf8616bc1378a02fde4,7847
+    pantry-tree:
+      sha256: e920d61bcc10ef2aee0cc3e2a216d05b8491564ad27c1c5e2fbbb221b00b7f8e
+      size: 2315
+  original:
+    hackage: QuickCheck-2.14.3
 snapshots:
 - completed:
     sha256: 8017c7970c2a8a9510c60cc70ac245d59e0c34eb932b91d37af09fe59855d854
