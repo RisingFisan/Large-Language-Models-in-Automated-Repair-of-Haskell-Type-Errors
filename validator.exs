@@ -22,11 +22,16 @@ defmodule Main do
     end
   end
 
-  def gpt_complete(code) do
+  def ask_gpt(mode, code) do
     headers = [
       {"Content-Type", "application/json"},
       {"Authorization", "Bearer #{File.read!(".openai_api_key") |> String.trim()}"}
     ]
+
+    system_msg = case mode do
+      :insert -> "Fill in the <INSERT> tag. Answer must only contain the inserted text."
+      :fix -> "Fix this Haskell program. Answer only with the fixed program."
+    end
 
     case HTTPoison.post("https://api.openai.com/v1/chat/completions", Jason.encode!(%{
       "model" => "gpt-4",
@@ -34,7 +39,7 @@ defmodule Main do
       "messages" => [
         %{
           "role" => "system",
-          "content" => "Fill in the <INSERT> tag. Answer must only contain the inserted text."
+          "content" => system_msg
         },
         %{
           "role" => "user",
@@ -43,21 +48,15 @@ defmodule Main do
       ]
     }), headers, recv_timeout: 30000) do
       {:ok, %{body: body}} ->
-        # IO.puts(body)
-        # IO.puts("Fixed program:")
-        # for choice <- Jason.decode!(body)["choices"] do
-        #   IO.puts(choice["message"]["content"])
-        # end
         {:ok, Jason.decode!(body)["choices"] |> Enum.map(fn choice -> choice["message"]["content"] end)}
       {:error, %HTTPoison.Error{reason: reason}} ->
         {:error, reason}
     end
   end
 
-  def check_fix(filename, fixed_code) do
-    qc_file = String.replace(filename, ".hs", "_qc.hs")
+  def check_fix(qc_file, fixed_code) do
     File.write!("variants/temp.hs", File.read!(qc_file) |> String.replace("-- [INSERT]\n", fixed_code))
-    result = case System.cmd("stack", ["runghc", "variants/temp.hs"]) do
+    result = case System.cmd("stack", ["runghc", "variants/temp.hs"], stderr_to_stdout: true) do
       {_ ,   0} -> :ok
       {err,  1} -> {:error, err}
     end
@@ -67,58 +66,120 @@ defmodule Main do
 
   def main do
 
-    with {:ok, filename} <- (if length(System.argv()) == 0, do: {:error, "No file specified."}, else: {:ok, System.argv() |> hd()}),
-        {:ok, _} <- (if File.exists?(filename), do: {:ok, nil}, else: {:error, "File #{filename} does not exist."}) do
+    no_variants = "--no-variants" in System.argv() || "-nv" in System.argv()
 
-      if File.dir?("variants") do
+    with {:ok, filepath} <- (if length(System.argv()) == 0, do: {:error, "No file or path specified."}, else: {:ok, System.argv() |> hd()}),
+        {:ok, _} <- (if File.exists?(filepath), do: {:ok, nil}, else: {:error, "File #{filepath} does not exist."}) do
+
+      if not no_variants and File.dir?("variants") do
         IO.puts("Removing old variants directory...")
         File.rm_rf("variants")
       end
 
-      IO.puts("Generating variants...")
-      case System.cmd("stack", ["run", System.argv() |> hd()]) do
-        {_, 0} ->
-          files = File.ls!("variants")
-          IO.puts("Success! Generated #{length(files) - 1} variants.")
+      is_path? = File.dir?(filepath)
 
-          # for file <- files, file =~ ~r/v\d+\.hs/ do
-          Enum.reduce_while(files, :ok, fn file, _ ->
-            if type_checks?(file) do
-              IO.puts("Variant #{file} type checks.")
+      filename = if is_path? do
+        filepath <> "/original.hs"
+      else
+        filepath
+      end
 
-              content = File.read!("variants/#{file}") |> String.replace(~r"`?undefined`?", "<INSERT>")
-              IO.puts(content)
+      filepath = if is_path? do
+        filepath
+      else
+        Regex.run(~r/.*(?=\/)/, filepath) |> hd()
+      end
 
-              File.rm("variants/#{file}")
-
-              # case gpt_complete(content) do
-              #   {:ok, choices} ->
-              #     IO.puts("Completions:")
-              #     IO.inspect(choices)
-              #   {:error, reason} ->
-              #     IO.puts("Error when communicating with GPT - #{reason}")
-              # end
-
-              possible_fix = String.replace(content, "<INSERT>", ":")
-
-
-              case check_fix(filename, possible_fix) do
-                :ok ->
-                  IO.puts("Fixed!")
-                  File.write!("variants/fixed.hs", possible_fix)
-                  {:halt, nil}
-                {:error, reason} ->
-                  IO.puts("Error - #{reason}")
-                  {:cont, nil}
+      if no_variants do
+        IO.puts("Attempting to fix file without type checking...")
+        if not File.dir?("variants"), do: File.mkdir!("variants")
+        case ask_gpt(:fix, File.read!(filename)) do
+          {:ok, choices} ->
+            if is_path? and File.exists?(filepath <> "/qc.hs") and File.read!(filepath <> "/qc.hs") |> String.contains?("[INSERT]") do
+              case Enum.reduce_while(choices, :err, fn choice, _ ->
+                IO.puts("Possible fix found:\n-----\n#{choice}\n-----\nTesting fix...")
+                case check_fix(filepath <> "/qc.hs", choice) do
+                  :ok ->
+                    File.write!(filepath <> "/fixed.hs", choice)
+                    {:halt, :ok}
+                  {:error, _reason} ->
+                    {:cont, :err}
+                end
+              end) do
+                :ok -> IO.puts("Fixed!")
+                :err -> IO.puts("Error - could not fix file.")
               end
-
             else
-              IO.puts("Variant #{file} does not type check.")
-              File.rm("variants/#{file}")
-              {:cont, nil}
+              IO.puts("QuickCheck file not found. Generating all possible fixes...")
+              Enum.reduce(choices, 1, fn choice, i ->
+                File.write!(filepath <> "/fix_#{i}.hs", choice)
+                i+1
+              end)
             end
-          end)
-        _ -> IO.puts("Error - variants could not be generated.")
+          {:error, reason} ->
+            IO.puts("Error when communicating with GPT - #{reason}")
+        end
+      else
+        IO.puts("Generating variants...")
+        case System.cmd("stack", ["run", filename]) do
+          {_, 0} ->
+            files = File.ls!("variants")
+            IO.puts("Success! Generated #{length(files) - 1} variants.")
+
+            # for file <- files, file =~ ~r/v\d+\.hs/ do
+            Enum.reduce_while(files, 1, fn file, i ->
+              if type_checks?(file) do
+                IO.puts("Variant #{file} type checks.")
+
+                content = File.read!("variants/#{file}") |> String.replace(~r"`?undefined`?", "<INSERT>")
+                IO.puts(content)
+
+                File.rm("variants/#{file}")
+
+                case ask_gpt(:insert, content) do
+                  {:ok, choices} ->
+                    if is_path? and File.exists?(filepath <> "/qc.hs") and File.read!(filepath <> "/qc.hs") |> String.contains?("[INSERT]") do
+                      j = Enum.reduce_while(choices, i, fn choice, _ ->
+                        IO.puts("Trying '#{choice}'...")
+
+                        possible_fix = String.replace(content, "<INSERT>", choice)
+
+                        case check_fix(filepath <> "/qc.hs", possible_fix) do
+                          :ok ->
+                            IO.puts("Fixed!")
+                            File.write!(filepath <> "/fixed.hs", possible_fix)
+                            {:halt, i+1}
+                          {:error, _reason} ->
+                            IO.puts("Error - fix '#{choice}' does not work.")
+                            {:cont, i}
+                        end
+                      end)
+                      if j == i do
+                        {:cont, i}
+                      else
+                        {:halt, j}
+                      end
+                    else
+                      IO.puts("QuickCheck file not found. Generating all possible fixes...")
+                      j = Enum.reduce(choices, i, fn choice, i ->
+                        File.write!(filepath <> "/fix_#{i}.hs", String.replace(content, "<INSERT>", choice))
+                        i+1
+                      end)
+                      {:cont, j}
+                    end
+                  {:error, reason} ->
+                    IO.puts("Error when communicating with GPT - #{reason}")
+                    {:cont, i}
+                end
+              else
+                IO.puts("Variant #{file} does not type check.")
+                File.rm("variants/#{file}")
+                {:cont, i}
+              end
+            end)
+            File.rm_rf!("variants")
+          _ -> IO.puts("Error - variants could not be generated.")
+        end
       end
     else
       {:error, reason} -> IO.puts("Error - #{reason}")

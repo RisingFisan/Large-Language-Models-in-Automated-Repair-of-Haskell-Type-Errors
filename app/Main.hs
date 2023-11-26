@@ -166,8 +166,9 @@ main =
                         putStrLn $ "Decl " ++ show i
                         putStrLn $ unlines $ map prettyPrint decls
                         if i == 0 then
-                            writeFile "variants/original.hs" (unlines $ map prettyPrint imports)
-                            >> appendFile "variants/original.hs" (unlines $ map prettyPrint decls)
+                            -- writeFile "variants/original.hs" (unlines $ map prettyPrint imports)
+                            -- >> appendFile "variants/original.hs" (unlines $ map prettyPrint decls)
+                            return ()
                         else
                             writeFile ("variants/v" ++ show i ++ ".hs") (unlines $ map prettyPrint imports)
                             >> appendFile ("variants/v" ++ show i ++ ".hs") (unlines $ map prettyPrint decls)))

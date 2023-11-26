@@ -13,14 +13,14 @@ defmodule Main do
       "messages" => [
         %{
           "role" => "system",
-          "content" => "Fill in the <INSERT> tag. Answer must only contain the inserted text."
+          "content" => "Fix this Haskell program. Answer only with the fixed program."
         },
         %{
           "role" => "user",
           "content" => """
                        tails :: [a] -> [[a]]
                        tails [] = [[]]
-                       tails l = <INSERT> ++ tails (tail l)
+                       tails l = l ++ tails (tail l)
                        """
         },
       ]
