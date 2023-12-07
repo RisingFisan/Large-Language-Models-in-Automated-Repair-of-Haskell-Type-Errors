@@ -14,7 +14,7 @@ converteMSetCorrect [] = []
 converteMSetCorrect ((e,n):t) = replicate n e ++ converteMSetCorrect t
 
 prop_convertMSet :: MSet Int -> Property
-prop_convertMSet xs = forAll genMSet (\xs -> converteMSet xs == converteMSetCorrect xs)
+prop_convertMSet xs = forAll genMSet (\xs -> f xs == converteMSetCorrect xs)
 
 main = do
     r <- quickCheckResult prop_convertMSet 

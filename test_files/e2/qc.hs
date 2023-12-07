@@ -1,4 +1,5 @@
 import Test.QuickCheck
+import System.Exit
 
 -- [INSERT]
 
@@ -16,4 +17,7 @@ prop_convertMSet :: MSet Int -> Property
 prop_convertMSet xs = forAll genMSet (\xs -> converteMSet xs == converteMSetCorrect xs)
 
 main = do
-    quickCheck prop_convertMSet
+    r <- quickCheckResult prop_convertMSet 
+    case r of
+        Success {} -> return ()
+        _ -> exitWith (ExitFailure 1)
