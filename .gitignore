@@ -4,3 +4,6 @@
 variants/
 *~
 .openai_api_key
+fixed.hs
+fixed_insert.hs
+ocaml*
