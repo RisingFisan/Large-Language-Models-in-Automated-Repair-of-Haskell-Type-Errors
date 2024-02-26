@@ -61,27 +61,27 @@ defmodule Main do
 
     qc = Enum.join(imports) <> File.read!(qc_file) <> "\n" <> fixed_code
 
-    File.write!("variants/temp.hs", qc)
-    result = case System.cmd("stack", ["runghc", "variants/temp.hs"], stderr_to_stdout: true) do
+    File.write!("temp.hs", qc)
+    result = case System.cmd("stack", ["runghc", "temp.hs"], stderr_to_stdout: true) do
       {_ ,   0} -> :ok
       {err,  1} -> {:error, err}
     end
-    File.rm("variants/temp.hs")
+    File.rm("temp.hs")
     result
   end
 
   def main do
 
-    no_variants = Enum.any?(["--fix", "--no-variants", "-nv"], & &1 in System.argv())
+    gen_variants = not Enum.any?(["--fix", "--no-variants", "-nv"], & &1 in System.argv())
 
-    only_variants = Enum.any?(["--only-variants", "--no-fix", "-nf"], & &1 in System.argv())
+    no_typecheck = Enum.any?(["--no-typecheck", "-nt"], & &1 in System.argv())
 
-    no_gpt = Enum.any?(["--no-gpt", "--variants-only"], & &1 in System.argv())
+    no_gpt = Enum.any?(["--no-gpt", "-ng", "--no-fix"], & &1 in System.argv())
 
     with {:ok, filepath} <- (if length(System.argv()) == 0, do: {:error, "No file or path specified."}, else: {:ok, System.argv() |> hd()}),
         {:ok, _} <- (if File.exists?(filepath), do: {:ok, nil}, else: {:error, "File #{filepath} does not exist."}) do
 
-      if not no_variants do
+      if gen_variants do
         if File.dir?("variants") do
           IO.puts("Removing old variants directory...")
           File.rm_rf("variants")
@@ -106,35 +106,7 @@ defmodule Main do
         end
       end
 
-      if no_variants do
-        IO.puts("Attempting to fix file without type checking...")
-        case ask_gpt(:fix, File.read!(filename)) do
-          {:ok, choices} ->
-            if is_path? and File.exists?(filepath <> "/qc.hs") do # and File.read!(filepath <> "/qc.hs") |> String.contains?("[INSERT]") do
-              case Enum.reduce_while(choices, :err, fn choice, _ ->
-                IO.puts("Possible fix found:\n-----\n#{choice}\n-----\nTesting fix...")
-                case check_fix(filepath <> "/qc.hs", choice) do
-                  :ok ->
-                    File.write!(filepath <> "/fixed.hs", choice)
-                    {:halt, :ok}
-                  {:error, _reason} ->
-                    {:cont, :err}
-                end
-              end) do
-                :ok -> IO.puts("Fixed!")
-                :err -> IO.puts("Error - could not fix file.")
-              end
-            else
-              IO.puts("QuickCheck file not found. Generating all possible fixes...")
-              Enum.reduce(choices, 1, fn choice, i ->
-                File.write!(filepath <> "/fix_#{i}.hs", choice)
-                i+1
-              end)
-            end
-          {:error, reason} ->
-            IO.puts("Error when communicating with GPT - #{reason}")
-        end
-      else
+      files = if gen_variants do
         IO.puts("Generating variants...")
         {content, test_cases} = case (File.read!(filename) |> String.split(~r/^\s*--\s*\[TEST CASES?\].*?\r?\n/m)) do
           [c] -> {c, nil}
@@ -145,80 +117,87 @@ defmodule Main do
           {_, 0} ->
             File.rm!("variants/original.hs")
             files = File.ls!("variants")
-            n_files = if test_cases != nil do
-              Enum.reduce(files, 0, fn file, i ->
+
+            if test_cases != nil do
+              Enum.map(files, fn file ->
                 f = File.open!("variants/" <> file, [:append])
                 IO.write(f, test_cases)
                 File.close(f)
-                i + 1
               end)
-            else
-              length(files)
             end
-            IO.puts("Success! Generated #{n_files} variants.")
 
-            if not only_variants do
-              Enum.reduce_while(files, 1, fn file, i ->
-                if type_checks?(file) do
-                  IO.puts("Variant #{file} type checks.")
+            IO.puts("Success! Generated #{length(files)} variants.")
+            files
 
-                  content = File.read!("variants/#{file}") |> String.replace(~r"`?undefined`?", "<INSERT>")
-                  IO.puts(content)
-
-                  if not no_gpt do
-                    File.rm("variants/#{file}")
-
-                    case ask_gpt(:insert, content) do
-                      {:ok, choices} ->
-                        if is_path? and File.exists?(filepath <> "/qc.hs") do # and File.read!(filepath <> "/qc.hs") |> String.contains?("[INSERT]") do
-                          j = Enum.reduce_while(choices, i, fn choice, _ ->
-                            IO.puts("Trying '#{choice}'...")
-
-                            possible_fix = String.replace(content, "<INSERT>", choice)
-
-                            case check_fix(filepath <> "/qc.hs", possible_fix) do
-                              :ok ->
-                                IO.puts("Fixed!")
-                                File.write!(filepath <> "/fixed.hs", possible_fix)
-                                {:halt, i+1}
-                              {:error, _reason} ->
-                                IO.puts("Error - fix '#{choice}' does not work.")
-                                {:cont, i}
-                            end
-                          end)
-                          if j == i do
-                            {:cont, i}
-                          else
-                            {:halt, j}
-                          end
-                        else
-                          IO.puts("QuickCheck file not found. Generating all possible fixes...")
-                          j = Enum.reduce(choices, i, fn choice, i ->
-                            File.write!(filepath <> "/fix_#{i}.hs", String.replace(content, "<INSERT>", choice))
-                            i+1
-                          end)
-                          {:cont, j}
-                        end
-                      {:error, reason} ->
-                        IO.puts("Error when communicating with GPT - #{reason}")
-                        {:cont, i}
-                    end
-                  else
-                    {:cont, i}
-                  end
-                else
-                  IO.puts("Variant #{file} does not type check.")
-                  File.rm("variants/#{file}")
-                  {:cont, i}
-                end
-              end)
-              if not no_gpt, do: File.rm_rf!("variants")
-            end
           {error, _} ->
             IO.puts("Error - variants could not be generated.\nOriginal error message:")
             IO.puts(error)
+          end
+        else
+          [filename]
         end
-      end
+
+        if not no_typecheck do
+          Enum.reduce_while(files, 1, fn file, i ->
+            content = cond do
+              not gen_variants -> File.read!(file)
+              type_checks?(file) ->
+                IO.puts("Variant #{file} type checks.")
+                File.read!("variants/#{file}") |> String.replace(~r"`?undefined`?", "<INSERT>")
+              true ->
+                IO.puts("Variant #{file} does not type check.")
+                File.rm("variants/#{file}")
+                nil
+            end
+
+            if content != nil and not no_gpt do
+              if gen_variants, do: File.rm("variants/#{file}")
+
+              case ask_gpt((if gen_variants, do: :insert, else: :fix), content) do
+                {:ok, choices} ->
+                  if is_path? and File.exists?(filepath <> "/qc.hs") do # and File.read!(filepath <> "/qc.hs") |> String.contains?("[INSERT]") do
+                    j = Enum.reduce_while(choices, i, fn choice, _ ->
+                      possible_fix = if gen_variants do
+                        String.replace(content, "<INSERT>", choice)
+                      else
+                        choice
+                      end
+
+                      IO.puts("Trying '#{possible_fix}'...")
+
+                      case check_fix(filepath <> "/qc.hs", possible_fix) do
+                        :ok ->
+                          IO.puts("Fixed!")
+                          File.write!(filepath <> "/fixed.hs", possible_fix)
+                          {:halt, i+1}
+                        {:error, _reason} ->
+                          IO.puts("Error - fix '#{choice}' does not work.")
+                          {:cont, i}
+                      end
+                    end)
+                    if j == i do
+                      {:cont, i}
+                    else
+                      {:halt, j}
+                    end
+                  else
+                    IO.puts("QuickCheck file not found. Generating possible fix#{if length(choices) > 1, do: "es", else: ""}...")
+                    j = Enum.reduce(choices, i, fn choice, i ->
+                      File.write!(filepath <> "/fix_#{i}.hs", String.replace(content, "<INSERT>", choice))
+                      i+1
+                    end)
+                    {:cont, j}
+                  end
+                {:error, reason} ->
+                  IO.puts("Error when communicating with GPT - #{reason}")
+                  {:cont, i}
+              end
+            else
+              {:cont, i}
+            end
+          end)
+          if not no_gpt, do: File.rm_rf!("variants")
+        end
     else
       {:error, reason} -> IO.puts("Error - #{reason}")
     end

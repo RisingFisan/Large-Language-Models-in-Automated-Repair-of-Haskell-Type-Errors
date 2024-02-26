@@ -9,6 +9,7 @@ import System.Directory
 import Control.Monad (forM)
 import Control.Arrow ((>>>))
 import System.Environment (getArgs)
+import System.Exit
 
 -- getName :: Name l -> String
 -- getName (Ident _ str) = str
@@ -94,9 +95,15 @@ undefinedsCase (HsAlt srcLoc pat (HsUnGuardedAlt expr) binds : xs) =
 undefinedsPatterns :: HsPat -> [HsPat]
 undefinedsPatterns (HsPVar _) = [HsPVar (HsIdent "undefined")]
 undefinedsPatterns (HsPLit _) = [HsPVar (HsIdent "undefined")]
-undefinedsPatterns (HsPApp n []) = [HsPVar (HsIdent "undefined")]
+undefinedsPatterns (HsPApp _ []) = [HsPVar (HsIdent "undefined")]
 undefinedsPatterns (HsPApp n pats) = HsPVar (HsIdent "undefined") : HsPApp (UnQual (HsIdent "undefined")) pats : map (HsPApp n) (undefinedsPatternsT pats)
+undefinedsPatterns (HsPInfixApp pat1 (Special HsCons) pat2) = [
+        HsPInfixApp (HsPVar (HsIdent "undefined")) (Special HsCons) pat2,
+        HsPInfixApp pat1 (Special HsCons) (HsPVar (HsIdent "undefined"))
+    ]
 undefinedsPatterns (HsPTuple t) = HsPVar (HsIdent "undefined") : map HsPTuple (tail $ undefinedsPatternsT t)
+undefinedsPatterns (HsPParen p) = undefinedsPatterns p
+undefinedsPatterns (HsPList ls) = concatMap undefinedsPatterns ls
 undefinedsPatterns HsPWildCard = []
 undefinedsPatterns x = error $ show x
 
@@ -140,11 +147,12 @@ mergeDecls (Right x : t) = [ x : r | r <- mergeDecls t]
 
 main :: IO ()
 main =
-    getArgs >>= \args ->
-    if length args /= 1 then
-        error "Missing required argument <filename.hs>."
-    else do
-        ast <- parseModule <$> readFile (head args)
+    getArgs >>= \args -> do
+        file <- case args of
+            [] -> error "Missing required argument <filename.hs>."
+            ("-" : _) -> getContents
+            (filename : _) -> readFile filename
+        let ast = parseModule file
         print ast
         case ast of
             ParseOk (HsModule _srcLoc _modName _maybeExportSpec imports declars) -> do
@@ -182,4 +190,5 @@ main =
                 putStrLn "Parse failed - check if the file doesn't contain any non-type errors."
                 putStrLn $ "Error at " ++ show srcLoc
                 putStrLn msg
+                exitFailure
 
