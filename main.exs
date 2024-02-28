@@ -9,13 +9,14 @@ defmodule Main do
       putStrLn "Hello, World!"
     """
 
-    case System.cmd("ghc", ["-fno-code", "variants/#{file}"], stderr_to_stdout: true) do
+    case System.cmd("ghc", ["-fno-code", file], stderr_to_stdout: true) do
       {_ ,   0} -> true
       {err,  1} ->
         if err =~ ~r"The IO action (`|‘|')main('|’|`) is not defined in module" do
-          File.write("variants/main_#{file}", File.read!("variants/#{file}") <> dummy_main)
-          {_output, status} = System.cmd("ghc", ["-fno-code", "variants/main_#{file}"], stderr_to_stdout: true)
-          File.rm("variants/main_#{file}")
+          new_file = String.replace(file, ~r".hs$", "_main.hs")
+          File.write(new_file, File.read!(file) <> dummy_main)
+          {_output, status} = System.cmd("ghc", ["-fno-code", new_file], stderr_to_stdout: true)
+          File.rm(new_file)
           status == 0
         else
           false
@@ -56,10 +57,24 @@ defmodule Main do
   end
 
   def check_fix(qc_file, fixed_code) do
+    qc_template = """
+    import Test.QuickCheck
+    import System.Exit
+
+    #{qc_file}
+
+    main = do
+        r <- quickCheckResult prop
+        case r of
+            Success {} -> return ()
+            _ -> exitWith (ExitFailure 1)
+
+    """
+
     imports = Regex.scan(~r"^import\s.*\n"m, fixed_code)
     fixed_code = String.replace(fixed_code, ~r"^import\s.*\n"m, "")
 
-    qc = Enum.join(imports) <> File.read!(qc_file) <> "\n" <> fixed_code
+    qc = Enum.join(imports) <> qc_template <> "\n" <> fixed_code
 
     File.write!("temp.hs", qc)
     result = case System.cmd("stack", ["runghc", "temp.hs"], stderr_to_stdout: true) do
@@ -78,8 +93,9 @@ defmodule Main do
 
     no_gpt = Enum.any?(["--no-gpt", "-ng", "--no-fix"], & &1 in System.argv())
 
-    with {:ok, filepath} <- (if length(System.argv()) == 0, do: {:error, "No file or path specified."}, else: {:ok, System.argv() |> hd()}),
-        {:ok, _} <- (if File.exists?(filepath), do: {:ok, nil}, else: {:error, "File #{filepath} does not exist."}) do
+    with {:ok, filename} <- (if length(System.argv()) == 0, do: {:error, "No file or path specified."}, else: {:ok, System.argv() |> hd()}),
+        {:ok, _} <- (if File.exists?(filename) and not File.dir?(filename), do: {:ok, nil}, else: {:error, "'#{filename}' does not exist or is not a file."}),
+        {:ok, _} <- (if type_checks?(filename), do: {:error, "'#{filename}' does not contain any type errors."}, else: {:ok, nil}) do
 
       if gen_variants do
         if File.dir?("variants") do
@@ -89,26 +105,18 @@ defmodule Main do
         File.mkdir!("variants")
       end
 
-      is_path? = File.dir?(filepath)
+      file_noext = Regex.replace(~r".hs$", filename, "")
 
-      filename = if is_path? do
-        filepath <> "/original.hs"
-      else
-        filepath
-      end
+      file_content = File.read!(filename)
 
-      filepath = if is_path? do
-        filepath
-      else
-        case Regex.run(~r/.*(?=\/)/, filepath) do
-          [ h | _ ] -> h
-          nil -> "."
-        end
+      qc_content = case Regex.run(~r"{-QC\s*(.*?)\s*QC-}"s, file_content) do
+        [_, x] -> x
+        nil -> nil
       end
 
       files = if gen_variants do
         IO.puts("Generating variants...")
-        {content, test_cases} = case (File.read!(filename) |> String.split(~r/^\s*--\s*\[TEST CASES?\].*?\r?\n/m)) do
+        {content, test_cases} = case file_content |> String.split(~r/^\s*--\s*\[TEST CASES?\].*?\r?\n/m) do
           [c] -> {c, nil}
           [c, t] -> {c, t}
         end
@@ -138,10 +146,10 @@ defmodule Main do
         end
 
         if not no_typecheck do
-          Enum.reduce_while(files, 1, fn file, i ->
+          i = Enum.reduce_while(files, 1, fn file, i ->
             content = cond do
               not gen_variants -> File.read!(file)
-              type_checks?(file) ->
+              type_checks?("variants/#{file}") ->
                 IO.puts("Variant #{file} type checks.")
                 File.read!("variants/#{file}") |> String.replace(~r"`?undefined`?", "<INSERT>")
               true ->
@@ -155,7 +163,7 @@ defmodule Main do
 
               case ask_gpt((if gen_variants, do: :insert, else: :fix), content) do
                 {:ok, choices} ->
-                  if is_path? and File.exists?(filepath <> "/qc.hs") do # and File.read!(filepath <> "/qc.hs") |> String.contains?("[INSERT]") do
+                  if qc_content != nil do
                     j = Enum.reduce_while(choices, i, fn choice, _ ->
                       possible_fix = if gen_variants do
                         String.replace(content, "<INSERT>", choice)
@@ -163,15 +171,15 @@ defmodule Main do
                         choice
                       end
 
-                      IO.puts("Trying '#{possible_fix}'...")
+                      IO.puts("Trying:\n#{possible_fix}\n---")
 
-                      case check_fix(filepath <> "/qc.hs", possible_fix) do
+                      case check_fix(qc_content, possible_fix) do
                         :ok ->
                           IO.puts("Fixed!")
-                          File.write!(filepath <> "/fixed.hs", possible_fix)
+                          File.write!(file_noext <> "_fixed.hs", possible_fix)
                           {:halt, i+1}
                         {:error, _reason} ->
-                          IO.puts("Error - fix '#{choice}' does not work.")
+                          IO.puts("Error - fix does not work.")
                           {:cont, i}
                       end
                     end)
@@ -181,9 +189,9 @@ defmodule Main do
                       {:halt, j}
                     end
                   else
-                    IO.puts("QuickCheck file not found. Generating possible fix#{if length(choices) > 1, do: "es", else: ""}...")
+                    IO.puts("QuickCheck prop not found. Generating possible fix#{if length(choices) > 1, do: "es", else: ""}...")
                     j = Enum.reduce(choices, i, fn choice, i ->
-                      File.write!(filepath <> "/fix_#{i}.hs", String.replace(content, "<INSERT>", choice))
+                      File.write!(file_noext <> "_fix_#{i}.hs", String.replace(content, "<INSERT>", choice))
                       i+1
                     end)
                     {:cont, j}
@@ -196,6 +204,7 @@ defmodule Main do
               {:cont, i}
             end
           end)
+          if i == 1, do: IO.puts("Unable to fix type error.")
           if not no_gpt, do: File.rm_rf!("variants")
         end
     else

@@ -7,3 +7,4 @@ variants/
 fixed.hs
 fixed_insert.hs
 ocaml*
+*.zip
